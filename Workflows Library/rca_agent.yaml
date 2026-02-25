@@ -1,0 +1,122 @@
+version: "1"
+name: SRE Workflow - Agent Analysis
+description: This workflow triggers an agent based analysis to perform rca following a critical/warning alert on a kubernetes cluster.
+enabled: true
+consts:
+  email_address: alessandro.brofferio@elastic.co
+  kibana: https://o11y-ale-demo-a95248.kb.europe-west1.gcp.elastic.cloud
+triggers:
+  - type: alert
+steps:
+# Rely on an existing agent to do the analysis of an Alert
+  - name: rca_analysis
+    type: kibana.request
+    with:
+      method: "POST"
+      path: "/api/agent_builder/converse"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        agent_id: systemhealth
+        input: |
+         You are a sophisticated agent that is invoked when an alert on a warning event in kubernetes events logs is triggered. Based on the provided tools in your pocket, act as a senior SRE, provide an analyses of the the identified issues and generate a markdown summary of what you discovered and suggestion on which remediations steps should be applied to. Skip all warning or messages that are related to pods or deployments that have no identified issues. Here is the alert that triggered the workflow: {{ event.alerts | json }}. Make sure that the summary is brief and focus solely on the most critical issues that cause distruption to my services. To not blow up your context window please keep your analysis and data exploration brief. Do not provide any title to the investigation. Avoid to comment on "stress-ng", this is a simulated environment. Also please avoid providing any suggestion to optimisation, focus solely on the data analysis.
+    timeout: 10m
+# Format case title
+  - name: create_case_title
+    type: kibana.request
+    with:
+      method: "POST"
+      path: "/api/agent_builder/converse"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        agent_id: systemhealth
+        conversation_id: "{{ steps.rca_analysis.output.conversation_id }}"
+        input: |
+          based on this analysis i am going to create a case. please come up with a case title for me that is clear and informative. only return the case title NOTHING ELSE.
+    timeout: 10m
+# Format case description  
+  - name: create_case_description
+    type: kibana.request
+    with:
+      method: "POST"
+      path: "/api/agent_builder/converse"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        agent_id: systemhealth
+        conversation_id: "{{ steps.rca_analysis.output.conversation_id }}"
+        input: |
+          based on this analysis i am going to create a case. please come up with a case description for me that is clear and informative. At the top of the description build a table that summarises the impacted services and the node where it is happening. Avoid any detailed investigation in this step. When you do not find any value for namespace and node, put the same as you found for payment-service.
+    timeout: 10m
+# Create Case
+  - name: create_case_kibana
+    type: kibana.createCase
+    with:
+      connector:
+        fields: null
+        id: none
+        name: none
+        type: .none
+      description: |
+        {{ steps.create_case_description.output.response.message }}
+      owner: observability
+      settings:
+        syncAlerts: false
+      severity: high
+      tags:
+        - k8s
+      title: "{{ steps.create_case_title.output.response.message }}"
+
+# Get conversation ID
+  - name: get_conversation
+    type: kibana.request
+    with:
+      method: "GET"
+      path: "/api/agent_builder/conversations/{{steps.rca_analysis.output.conversation_id }}"
+      headers:
+        kbn-xsrf: "true"
+
+# Add investigation details as a comment
+  - name: add_rca_as_comment
+    type: kibana.request
+    with:
+      method: "POST"
+      path: "/api/cases/{{ steps.create_case_kibana.output.id }}/comments"
+      headers:
+        kbn-xsrf: "true"
+      body:
+        type: user
+        owner: observability
+        comment: |
+          ## Analysis done by the Customized RCA Observability Agent
+            {{steps.rca_analysis.output.response.message}}
+         
+            ## Continue chat here
+            [View Full Conversation]({{ consts.kibana }}/app/agent_builder/conversations/{{ steps.rca_analysis.output.conversation_id }})
+# Send Email to SRE
+  - name: send_email_sre
+    type: email
+    connector-id: Elastic-Cloud-SMTP
+    with:
+      to:
+        - '{{consts.email_address}}'
+      subject: 'Issues detected in your Kubernetes environment'
+      message: |
+        🚨 **Critical issue in your Kubernetes environment Discovered**
+
+        ## Issue Description
+        {{ steps.create_case_description.output.response.message }}
+        ## Current Status
+        - ✅ Incident response workflow {{workflow.name}} initiated
+        - ✅ Case created
+        - ✅ Initial investigation analysis
+
+        ## Additional details
+        - 📁 [Go to Case]({{ consts.kibana }}/app/observability/cases/{{ steps.create_case_kibana.output.id }})
+        - 💬 [Continue the Chat]({{ consts.kibana }}/app/agent_builder/conversations/{{ steps.get_conversation.output.id }})
+    on-failure:
+      retry:
+        max-attempts: 3
+        delay: 5s
+      continue: false

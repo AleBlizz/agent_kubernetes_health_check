@@ -32,7 +32,6 @@ Additional services can be introduced to simulate scenarios like resource underu
 
 *The Agent also includes a tool that analyzes resource usage and recommends optimizations, helping identify overprovisioned deployments. Tools are described in the tools.md which also provide a list of API calls to deploy the agent and the tools on your cluster*
 
----
 
 ## ⚡ Demo 2: Remediation Workflows
 
@@ -48,18 +47,32 @@ In this demo, a dedicated service within the *`frontend-ecommerce`* deployment s
 
 Workflow is described in the *`workflow.yaml`* file.
 
+### Demo 3: RCA Workflow (Root Cause Analysis)
+
+This workflow runs an automated RCA analysis that aggregates logs, events and metrics, then produces a concise root-cause report.
+
+- Workflow source: Workflows\ library/rca_agent.yaml.
+- Purpose: correlate Pod events, OOM/crash logs and service errors to identify the most likely root cause and suggested remediation steps.
+- Steps:
+  1. Trigger: monitoring alert or manual invocation.
+  2. Collection: ingest logs, events and metrics for the affected namespace(s).
+  3. Analysis: execute rca_agent to correlate signals and generate findings.
+  4. Output: structured RCA report (JSON/YAML) and optional follow-up actions (e.g., annotate incidents, create tickets, or call remediation endpoints).
+
+
 ## Usage
 
 This demo leverages OpenTelemetry and relies on EDOT (Elastic Distribution of OpenTelemetry) for log and metric collection. To get started:
 
 1. Set up an Elastic Cloud Cluster and deploy the EDOT components by following the Kibana tutorial.
-2. Deploy the e-commerce demo services:
+2. Copy and paste Workflows in your Kibana
+3. Deploy required Agent and tool relying on the provided configuration in the *AgentBuilder* folder
+4. Run the script_manage.sh tool to deploy all the needed components
     ```bash
-    kubectl apply -f deployment_cart_payment_service_simulation.yaml
+    ./script_manage.sh start
     ```
-3. Deploy the remediation service:
+5. Deploy the required components for the demo remediation
     ```bash
     kubectl apply -f cluster-manager.yaml
     ```
-
-You're now ready to explore the demos!
+3. Wait for Alerts to be triggered and check your mail :)
