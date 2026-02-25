@@ -104,25 +104,35 @@ spec:
 ---
 # 1. THE STEADY LOAD (Fake Name: Inventory Worker)
 # Aim: High CPU usage, stable memory.
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: inventory-worker-01
+  namespace: default
 spec:
-  containers:
-  - name: worker
-    image: ubuntu:22.04
-    resources:
-      limits:
-        cpu: "800m"
-        memory: "256Mi"
-    command: ["/bin/bash", "-c"]
-    args:
-      - |
-        apt-get update && apt-get install -y stress-ng
-        echo "[INFO] Inventory sync started..."
-        # Constant 70% CPU load
-        stress-ng --cpu 2 --cpu-load 70
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-worker-01
+  template:
+    metadata:
+      labels:
+        app: inventory-worker-01
+    spec:
+      containers:
+      - name: inventory-worker-01
+        image: ubuntu:22.04
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "256Mi"
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            apt-get update && apt-get install -y stress-ng
+            echo "[INFO] Inventory sync started..."
+            # Constant 70% CPU load
+            stress-ng --cpu 2 --cpu-load 70 --timeout 0
 ---
 # 2. THE STABLE MEMORY POD (Fake Name: Checkout Processor)
 # Aim: Constant 10% Memory usage and 10% CPU usage. No crashing.
@@ -141,7 +151,7 @@ spec:
         app: processor
     spec:
       containers:
-      - name: processor
+      - name: checkout-processor-v2
         image: ubuntu:22.04
         resources:
           requests:
@@ -159,7 +169,7 @@ spec:
             # --vm-bytes 50M: Exactly 10% of the 500Mi limit
             # --vm-keep: Do not release the memory (prevents the 'sawtooth' pattern)
             # --cpu 1 --cpu-load 10: Adds a constant 10% CPU hum
-            stress-ng --vm 1 --vm-bytes 10M --vm-keep --cpu 1 --cpu-load 10
+            stress-ng --vm 1 --vm-bytes 10M --vm-keep --cpu 1 --cpu-load 10 --timeout 0
 ---
 apiVersion: apps/v1
 kind: Deployment
