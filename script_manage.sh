@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-FILE_NAME="/Users/aleb/Documents/AgenticKubernetes/deployment_cart_payment_service_simulation.yaml"
+FILE_NAME="./deployment_cart_payment_service_simulation.yaml"
 
 # Check if kubectl is installed
 if ! command -v kubectl &> /dev/null; then
