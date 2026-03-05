@@ -36,8 +36,56 @@ case "$1" in
             kubectl rollout status -f "$FILE_NAME"
         done
         ;;
+    product-catalog-api)
+        case "$2" in
+            logs)
+                echo "Logs for product-catalog-api:"
+                kubectl logs -l app=product-catalog-api --tail=100 -f
+                ;;
+            restart)
+                echo "Restarting product-catalog-api..."
+                kubectl rollout restart deployment/product-catalog-api
+                kubectl rollout status deployment/product-catalog-api
+                ;;
+            status)
+                echo "Status for product-catalog-api:"
+                kubectl get deployment product-catalog-api
+                echo ""
+                kubectl get pods -l app=product-catalog-api
+                ;;
+            *)
+                echo "Usage: $0 product-catalog-api {logs|restart|status}"
+                exit 1
+                ;;
+        esac
+        ;;
+    order-analytics-worker)
+        case "$2" in
+            logs)
+                echo "Logs for order-analytics-worker:"
+                kubectl logs -l app=order-analytics-worker --tail=100 -f
+                ;;
+            restart)
+                echo "Restarting order-analytics-worker..."
+                kubectl rollout restart deployment/order-analytics-worker
+                kubectl rollout status deployment/order-analytics-worker
+                ;;
+            status)
+                echo "Status for order-analytics-worker:"
+                kubectl get deployment order-analytics-worker
+                echo ""
+                kubectl get pods -l app=order-analytics-worker
+                ;;
+            *)
+                echo "Usage: $0 order-analytics-worker {logs|restart|status}"
+                exit 1
+                ;;
+        esac
+        ;;
     *)
-        echo "Usage: $0 {start|delete|status|restart}"
+        echo "Usage: $0 {start|delete|status|restart|product-catalog-api|order-analytics-worker}"
+        echo "       $0 product-catalog-api {logs|restart|status}"
+        echo "       $0 order-analytics-worker {logs|restart|status}"
         exit 1
         ;;
 esac

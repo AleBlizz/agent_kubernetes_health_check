@@ -200,3 +200,231 @@ spec:
             echo "Starting heavy memory task..."
             stress-ng --vm 1 --vm-bytes 400M --vm-keep --vm-populate
           done
+---
+# 3. PYTHON SERVICE (Fake Name: Order Analytics Worker)
+# Aim: Moderate CPU (~40%), stable memory (~150MB).
+# Instrumented with EDOT Python agent injected by the OTel Operator.
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-analytics-worker
+spec:
+  selector:
+    app: order-analytics-worker
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-analytics-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-analytics-worker
+  template:
+    metadata:
+      labels:
+        app: order-analytics-worker
+        app.kubernetes.io/name: order-analytics-worker
+        app.kubernetes.io/version: "1.0.0"
+      annotations:
+        # Triggers EDOT Python auto-instrumentation injection by the OTel Operator.
+        # The Instrumentation CR 'elastic-instrumentation' lives in opentelemetry-operator-system.
+        instrumentation.opentelemetry.io/inject-python: "opentelemetry-operator-system/elastic-instrumentation"
+    spec:
+      containers:
+      - name: order-analytics-worker
+        image: python:3.12-slim
+        ports:
+          - containerPort: 8080
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "400m"
+            memory: "256Mi"
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            # Pin Flask to 2.x — elastic-otel-python:1.9.0 bundles
+            # opentelemetry-instrumentation-flask which may not patch Flask 3.x
+            pip install "flask>=2.3,<3.0" --quiet --no-cache-dir
+
+            # Write to a file: running via 'python3 -c "..."' can corrupt
+            # the shell environment before sitecustomize.py bootstraps the agent
+            cat > /app.py << 'PYEOF'
+            import threading, time, math
+            from flask import Flask, jsonify
+
+            app = Flask(__name__)
+            _order_count = 0
+            # Pre-allocate ~80MB of stable heap to simulate a data cache
+            _cache = bytearray(80 * 1024 * 1024)
+
+            def analytics_worker():
+                global _order_count
+                while True:
+                    sum(math.sqrt(i) * math.log(i + 1) for i in range(1, 6000))
+                    _order_count += 1
+                    time.sleep(0.08)
+
+            @app.route('/health')
+            def health():
+                return jsonify(status='ok', service='order-analytics')
+
+            @app.route('/analytics/summary')
+            def summary():
+                return jsonify(orders_processed=_order_count, avg_value=99.5)
+
+            threading.Thread(target=analytics_worker, daemon=True).start()
+            # use_reloader=False: Werkzeug's reloader forks the process which
+            # can orphan the OTel tracer provider before it flushes spans
+            app.run(host='0.0.0.0', port=8080, use_reloader=False)
+            PYEOF
+            python3 /app.py
+---
+# 4. JAVA SERVICE (Fake Name: Product Catalog API)
+# Aim: Low-moderate CPU (~25%), stable JVM memory (~300MB).
+# Instrumented with EDOT Java agent injected by the OTel Operator.
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-catalog-api
+spec:
+  selector:
+    app: product-catalog-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-catalog-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product-catalog-api
+  template:
+    metadata:
+      labels:
+        app: product-catalog-api
+        app.kubernetes.io/name: product-catalog-api
+        app.kubernetes.io/version: "1.0.0"
+      annotations:
+        # Triggers EDOT Java auto-instrumentation injection by the OTel Operator.
+        # Sets JAVA_TOOL_OPTIONS to load the elastic-otel-javaagent on JVM startup.
+        instrumentation.opentelemetry.io/inject-java: "opentelemetry-operator-system/elastic-instrumentation"
+    spec:
+      containers:
+      - name: product-catalog-api
+        # JDK 21+ required: OTel Java agent instruments com.sun.net.httpserver only on JDK 18+
+        image: eclipse-temurin:21-jdk-alpine
+        ports:
+          - containerPort: 8080
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "600m"
+            memory: "1Gi"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            mkdir -p /app
+            cat > /app/ProductCatalog.java << 'JAVAEOF'
+            import com.sun.net.httpserver.HttpServer;
+            import java.net.InetSocketAddress;
+            import java.util.concurrent.*;
+            import java.util.concurrent.atomic.AtomicLong;
+
+            public class ProductCatalog {
+                static final AtomicLong requestCount = new AtomicLong(0);
+
+                public static void main(String[] args) throws Exception {
+                    // Stable JVM heap: keep a reference to simulate a product index cache
+                    byte[] catalogCache = new byte[100 * 1024 * 1024];
+
+                    // Background: low CPU workload simulating catalog re-indexing
+                    ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+                    scheduler.scheduleAtFixedRate(() -> {
+                        double x = 0;
+                        for (int i = 1; i < 30000; i++) x += Math.sqrt(i);
+                    }, 0, 400, TimeUnit.MILLISECONDS);
+
+                    // Embedded HTTP server to expose endpoints (required for OTel HTTP spans)
+                    HttpServer server = HttpServer.create(new InetSocketAddress(8080), 10);
+                    server.createContext("/health", exchange -> {
+                        byte[] body = "{\"status\":\"ok\",\"service\":\"product-catalog\"}".getBytes();
+                        exchange.sendResponseHeaders(200, body.length);
+                        exchange.getResponseBody().write(body);
+                        exchange.getResponseBody().close();
+                    });
+                    server.createContext("/products", exchange -> {
+                        long count = requestCount.incrementAndGet();
+                        byte[] body = ("{\"products\":[\"SKU-001\",\"SKU-002\",\"SKU-003\"],\"total\":3,\"req\":" + count + "}").getBytes();
+                        exchange.sendResponseHeaders(200, body.length);
+                        exchange.getResponseBody().write(body);
+                        exchange.getResponseBody().close();
+                    });
+                    server.setExecutor(Executors.newFixedThreadPool(4));
+                    server.start();
+                    System.out.println("[INFO] Product Catalog API started on :8080");
+                    Thread.currentThread().join();
+                }
+            }
+            JAVAEOF
+            javac /app/ProductCatalog.java -d /app
+            java -cp /app ProductCatalog
+---
+# TRAFFIC GENERATOR: Drives HTTP requests into the Python and Java services
+# to produce traces via the EDOT auto-instrumentation agents.
+# Mirrors the cart→payment pattern: each request becomes an OTel span.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traffic-generator
+  template:
+    metadata:
+      labels:
+        app: traffic-generator
+    spec:
+      containers:
+      - name: traffic-generator
+        image: busybox
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            while true; do
+              # Drive traffic into Python (Flask) → generates OTel HTTP server spans
+              wget -q -O- http://order-analytics-worker/analytics/summary >/dev/null 2>&1 \
+                && echo "[$(date +%T)] order-analytics: OK" \
+                || echo "[$(date +%T)] order-analytics: UNREACHABLE"
+
+              # Drive traffic into Java (HttpServer) → generates OTel HTTP server spans
+              wget -q -O- http://product-catalog-api/products >/dev/null 2>&1 \
+                && echo "[$(date +%T)] product-catalog: OK" \
+                || echo "[$(date +%T)] product-catalog: UNREACHABLE"
+
+              sleep 3
+            done
